@@ -1,0 +1,168 @@
+---
+title: "Slendr Simulations Europe"
+author: "Jose Antonio Urban Aragon"
+date: "3/4/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Define broader geographic regions
+```{r}
+map <- world(
+  xrange = c(-15, 60), # min-max longitude
+  yrange = c(20, 65),  # min-max latitude
+  crs = "EPSG:3035"    # projected CRS used internally
+)
+
+plot_map(map)
+
+africa <- region(
+  "Africa", map,
+  polygon = list(c(-18, 20), c(40, 20), c(30, 33),
+                 c(20, 32), c(10, 35), c(-8, 35))
+)
+europe <- region(
+  "Europe", map,
+  polygon = list(
+    c(-8, 35), c(-5, 36), c(10, 38), c(20, 35), c(25, 35),
+    c(33, 45), c(20, 58), c(-5, 60), c(-15, 50)
+  )
+)
+anatolia <- region(
+  "Anatolia", map,
+  polygon = list(c(28, 35), c(40, 35), c(42, 40),
+                 c(30, 43), c(27, 40), c(25, 38))
+)
+```
+
+
+## Define demographic history and population boundaries
+```{r}
+afr <- population( # African ancestral population
+  "AFR", parent = "ancestor", time = 52000, N = 3000,
+  map = map, polygon = africa
+)
+
+ooa <- population( # population of the first migrants out of Africa
+  "OOA", parent = afr, time = 51000, N = 500, remove = 25000,
+  center = c(33, 30), radius = 400e3
+) %>%
+  move(
+    trajectory = list(c(40, 30), c(50, 30), c(60, 40)),
+    start = 50000, end = 40000, snapshots = 20
+  )
+
+ehg <- population( # Eastern hunter-gatherers
+  "EHG", parent = ooa, time = 28000, N = 1000, remove = 6000,
+  polygon = list(
+    c(26, 55), c(38, 53), c(48, 53), c(60, 53),
+    c(60, 60), c(48, 63), c(38, 63), c(26, 60))
+)
+
+eur <- population( # European population
+  name = "EUR", parent = ehg, time = 25000, N = 2000,
+  polygon = europe
+)
+
+ana <- population( # Anatolian farmers
+  name = "ANA", time = 28000, N = 3000, parent = ooa, remove = 4000,
+  center = c(34, 38), radius = 500e3, polygon = anatolia
+) %>%
+  expand_range( # expand the range by 2.500 km
+    by = 2500e3, start = 10000, end = 7000,
+    polygon = join(europe, anatolia), snapshots = 20
+  )
+
+yam <- population( # Yamnaya steppe population
+  name = "YAM", time = 7000, N = 500, parent = ehg, remove = 2500,
+  polygon = list(c(26, 50), c(38, 49), c(48, 50),
+                 c(48, 56), c(38, 59), c(26, 56))
+) %>%  move(trajectory = list(c(15, 50)), start = 5000, end = 3000, snapshots = 10)
+
+```
+
+
+## Define geneflow events
+```{r}
+gf <- list(
+  gene_flow(from = ana, to = yam, rate = 0.5, start = 6500, end = 6400, overlap = FALSE),
+  gene_flow(from = ana, to = eur, rate = 0.5, start = 8000, end = 6000),
+  gene_flow(from = yam, to = eur, rate = 0.75, start = 4000, end = 3000)
+)
+```
+
+## Compile the model to a set of configuration files
+
+```{r}
+model <- compile_model(
+  populations = list(afr, ooa, ehg, eur, ana, yam), # populations defined above
+  geneflow = gf, # geneflow events defined above
+  generation_time = 30,
+  resolution = 10e3, # resolution in meters per pixel
+  competition_dist = 130e3, mate_dist = 100e3, # spatial interaction in SLiM
+  dispersal_dist = 70e3, # how far will offspring end up from their parents
+  path = NULL
+)
+```
+
+
+## Schedule populations sampling 
+We will sample 10 individuals from different locations accross Europe. 
+```{r}
+
+samples <- dplyr::bind_rows(
+  schedule_sampling(model, times = c(12000,5000,2000), locations = list(c(15,50)), list(eur, 10)),
+  schedule_sampling(model, times = c(12000,5000,2000), locations = list(c(16,55)), list(eur, 10)),
+  schedule_sampling(model, times = c(12000,5000,2000), locations = list(c(17,60)), list(eur, 10)),
+  schedule_sampling(model, times = c(12000,5000,2000), locations = list(c(18,65)), list(eur, 10)),
+  schedule_sampling(model, times = c(12000,5000,2000), locations = list(c(19,62)), list(eur, 10)),
+  schedule_sampling(model, times = c(12000,5000,2000), locations = list(c(20,61)), list(eur, 10)),
+)
+#test_eur <- schedule_sampling(model, times = c(12000,5000,2000), locations = list(c(15,50)), list(eur, 10))
+
+
+```
+
+
+# Test slim run
+
+```{r}
+slim(
+  model, sequence_length = 100e3, recombination_rate = 1e-8, burnin = 200e3,
+  sampling = samples, method = "batch", random_seed = 314159, max_attempts = 1
+)
+```
+
+## Test ts load
+
+```{r}
+ts <- ts_load(model, recapitate = TRUE, simplify = TRUE, recombination_rate = 1e-8, Ne = 10000, random_seed = 314159)
+
+```
+
+
+## Test ts load
+
+```{r}
+data <- ts_data(ts)
+```
+
+## Plotting locations of simulated sampled individuals
+
+
+```{r}
+sampled_data <- ts_data(ts) %>% filter(remembered)
+
+ggplot() +
+  geom_sf(data = map, fill = "lightgray", color = NA) +
+  geom_sf(data = sampled_data, aes(shape = pop, color = time)) +
+  ggtitle("Locations of simulated sampled individuals") +
+  scale_color_continuous(type = "viridis") +
+  theme_bw()
+
+```
+
+
